@@ -323,6 +323,9 @@ Behavior [C]:
 - Both are sent as the pattern-header message `{pattern, field, v}`, field 0 shuffle, 1 length
   (msg 41 sub 42 / 59 / 76, senders `sub_43ECCA`, `sub_441CC9`, `sub_445C88`;
   `docs/song_load.md` section 4.10, which lists every device message of the panel).
+- **orb** (orb's own commands; what the original's Edit menu items do was not read): Edit >
+  Cut, Copy, Paste and Duplicate Pattern act on the selected pattern of the focused row, and
+  Edit > Undo takes back the last Cut, Paste or Duplicate (section 18).
 
 ## 5. TB-303 (two)
 
@@ -963,6 +966,19 @@ read, and what it leaves out.
     frames without a draw, the sizes a resize left behind (`tests/part_textures.rs`).
   - Each knob arc (three quarters of the panel's vertices) is tessellated once per look and
     drawn as that mesh (`ArcMeshes`, `paint_arc`).
+- **The Edit menu's pattern commands** (section 18). A paste, a cut, a Duplicate and an Undo
+  write one pattern whole, as Clear does: msg 41 sub 44, 61 or 78 `{p, bytes}`
+  (`Link::set_pattern`, after the panel's pending events); a Duplicate's selection follows it
+  with the panel's events. The pattern bytes stay in the app (`App::clip`): Copy and Cut put
+  only a marker text on the system clipboard ("OpenRB-338 pattern: TR-909 A1 [process.count]"),
+  and a paste takes the pattern only when the clipboard brings that text back, so no bytes are
+  read from the clipboard and text copied elsewhere since pastes nothing. egui-winit turns
+  Ctrl/Cmd+X, C and V into egui's Cut, Copy and Paste events without a key event;
+  `App::pattern_keys` takes them, and Ctrl/Cmd+D and Z, only where the panel takes keys (no text
+  field focused, no browser, prompt or error box open), and leaves Cut and Copy to a window's
+  selected text. Edit > Paste Pattern asks for the system clipboard
+  (`ViewportCommand::RequestPaste`), so it takes the path of Ctrl/Cmd+V. A press on an open menu
+  or a window over the panel does not move the row focus (`App::focus_click`).
 - **Not done.** The logo click (msg 58), and the mod's panel art (not drawn by decision, section 18). The song's own mod
   is applied (section 18). The computer keyboard is done (task-070, section 10) except PgUp/PgDn (no scrolling rack)
   and the drums' Shift+Tab.
@@ -1028,7 +1044,7 @@ starts with it open. The panel takes no key or click while a browser is open. Th
 the window, `App::menu`; the headless panel tests run without it) and the commands behind it
 (`App::command(Cmd)`). It is the user's reduced menu (2026-10-26): of the original's menu
 (section 12) only the song files, the mod and the Vintage flag, plus the keyboard mode of section
-10.
+10 and orb's own pattern commands in the Edit menu (below).
 
 | Menu | Item | What it does |
 |---|---|---|
@@ -1037,6 +1053,11 @@ the window, `App::menu`; the headless panel tests run without it) and the comman
 | File | Save (Ctrl+S, Cmd+S on macOS) | writes the song's file; a song with none goes to Save As |
 | File | Save As... | the browser for a `.rbs`; the file becomes the song's file |
 | File | Export Loop as Audio File... | the browser for `.wav`, `.flac` or `.ogg`; enabled in song mode only (the original disables it in pattern mode, section 12) |
+| Edit | Undo (Ctrl+Z, Cmd+Z on macOS) | puts back the pattern the last Cut, Paste or Duplicate Pattern wrote, and after a Duplicate selects its source again; one level, no redo; the item names the command ("Undo Paste Pattern") and is disabled when there is nothing to undo (below) |
+| Edit | Cut Pattern (Ctrl+X, Cmd+X) | Copy Pattern, then the pattern's steps are emptied; the length and the shuffle flag stay, as with the 303's Clear |
+| Edit | Copy Pattern (Ctrl+C, Cmd+C) | the focused row's selected pattern (steps, length, shuffle flag) to orb's clipboard; the song is not modified |
+| Edit | Paste Pattern (Ctrl+V, Cmd+V) | the clipboard's pattern into the focused row's selected pattern, into a row of its kind only (a TB-303 pattern into either 303); the knobs stay; a paste that changes nothing sends nothing and leaves the song unmodified |
+| Edit | Duplicate Pattern (Ctrl+D, Cmd+D) | the selected pattern into the row's next empty pattern (after it, on through D8, then from A1), which is then selected as a click on its button selects it; the clipboard stays |
 | Mods | Standard ReBirth, a mod per file, Choose file... | the song's kit, checked (below) |
 | Mods | Refresh List | reads the Mods folder again (the list cache, below; task-101); directly after "Choose file..." with a separator after it, so the two form one group (task-118); the status line then says "Mod list refreshed: N mods in <folder> (+a, -b)" (what changed against the previous list, by file), a read error of the folder goes to the error message box (section 18.0) |
 | Mods | Demo Song | opens the `Demo.rbs` of the current song's mod (below); enabled only when that mod file has one, so never for "Standard ReBirth" (task-094) |
@@ -1049,6 +1070,26 @@ the window, `App::menu`; the headless panel tests run without it) and the comman
 
 The Help menu is last in the bar. Its items are the list `HELP_ITEMS` in `menu.rs`, so a new item
 is one more entry.
+
+- **The Edit menu** (orb's own commands). The items act on the selected pattern of the row with
+  the focus (the lit focus bar, section 1) and are disabled without a song (the demo panel). The
+  names and shortcuts of Cut, Copy and Paste Pattern are those the original's Edit menu shows
+  (the screenshot in `docs/test_machine.md` section 3); what the original's items do was not
+  read.
+  - A pattern is **empty** when none of its 16 steps is set, whatever its length and shuffle
+    flag: every 808 and 909 step byte 0, every 303 step the Clear state (note 0, no flags, rest
+    on), which a new song holds. A 303 pattern of sixteen low C notes with rest off plays and is
+    not empty: the shipped "ReBirth 1.0 Default Song" holds one in each of its 64 303 slots, so
+    there a Duplicate on a 303 row finds no empty pattern.
+  - There are no dialogs: a paste onto a used pattern overwrites it, and Undo brings it back.
+    Undo is forgotten by any other pattern edit (a step, the length, the shuffle flag, the
+    303's Clear), an open and File > New.
+  - A Duplicate's selection is a click on the pattern button: the bank follows, in pattern mode
+    the row changes at the next bar line, in song mode with record on the change is recorded.
+    The pattern goes to the engine first, so it never plays the new pattern before it holds it.
+  - The status line reports each command with the row and the pattern names: "TR-909: A1
+    duplicated to A2", "TR-909: pasted into A2", "TR-909: no empty pattern left", "The
+    clipboard holds a TB-303 pattern", "The clipboard holds no pattern".
 
 - **Help > Keyboard Shortcuts** (task-105; `crates/orb-ui/src/key_help.rs`). Centered as About is
   (`App::key_help_serial`); Escape is consumed after the other windows. The text is one table,
@@ -1297,7 +1338,8 @@ OpenRB-338-specific (a UI decision of the user, not a fact about the original).
 
 - **The status line** is the 22-point bar at the bottom of the window, for information and for
   repeating notifications: "Saved PATH", "Exporting PATH ...", "Exported PATH", "Mod list
-  refreshed: N mods in FOLDER (+a, -b)", and the notifications of errors that repeat (below).
+  refreshed: N mods in FOLDER (+a, -b)", the Edit menu's results (section 18), and the
+  notifications of errors that repeat (below).
   A click (outside any box, prompt or browser) dismisses it, except while an export runs. It
   never shows the error of a one-time action: that is the box.
 - **The error message box** (`orb-ui/src/error_box.rs`, `App::fail`) shows every error, one at a

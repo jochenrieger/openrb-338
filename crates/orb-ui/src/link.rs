@@ -29,7 +29,8 @@
 //! pattern (the original's views keep a current pattern, `docs/song_load.md` section 4.10). The
 //! link keeps a copy of the four pattern arrays ([`Link::patterns`], from the song and the edits
 //! it sends) to fill the 303 step editor, the drum step strips and the length and shuffle
-//! displays when a pattern is selected.
+//! displays when a pattern is selected. The Edit menu's commands read a pattern whole
+//! ([`Link::pattern`]) and write one whole ([`Link::set_pattern`]).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -121,6 +122,45 @@ fn layout(row: usize) -> (usize, usize, usize) {
         2 => (32, 194, 12),
         _ => (33, 194, 12),
     }
+}
+
+/// The bytes of a cleared 303 step: note 0, no flags, rest on (`Step303::default`).
+const CLEAR_303_STEP: [u8; 6] = [0, 0, 0, 0, 0, 1];
+
+/// Whether `pattern`, a whole pattern of row `row`, has no step set: every 303 step is cleared,
+/// every drum step byte is 0. The length and the shuffle flag do not count.
+pub fn is_empty_pattern(row: usize, pattern: &[u8]) -> bool {
+    let (_, _, slen) = layout(row);
+    pattern[2..].chunks(slen).all(|s| {
+        if row < 2 {
+            s == CLEAR_303_STEP
+        } else {
+            s.iter().all(|&b| b == 0)
+        }
+    })
+}
+
+/// `pattern` with its steps emptied ([`is_empty_pattern`]); the length and the shuffle flag stay.
+pub fn emptied_pattern(row: usize, pattern: &[u8]) -> Vec<u8> {
+    let (_, _, slen) = layout(row);
+    let mut p = pattern.to_vec();
+    for s in p[2..].chunks_mut(slen) {
+        if row < 2 {
+            s.copy_from_slice(&CLEAR_303_STEP);
+        } else {
+            s.fill(0);
+        }
+    }
+    p
+}
+
+/// The first empty pattern of row `row` after `from` (0..=31) in `patterns`, the row's 32
+/// patterns: on through pattern 31, then from 0. `None` when no other pattern is empty.
+pub fn next_empty_pattern(row: usize, patterns: &[u8], from: u8) -> Option<u8> {
+    let (_, plen, _) = layout(row);
+    (1..32)
+        .map(|d| (from + d) % 32)
+        .find(|&p| is_empty_pattern(row, &patterns[plen * p as usize..][..plen]))
 }
 
 /// The index of a control's device and controller: the knobs, faders and switches of the 303s,
@@ -485,6 +525,38 @@ impl Link {
         &self.patterns
     }
 
+    /// Pattern `p` (0..=31) of row `row`, whole (98 or 194 bytes), as [`Link::patterns`] holds
+    /// it: the panel's events count once they are forwarded ([`Link::forward`]).
+    pub fn pattern(&self, row: usize, p: u8) -> &[u8] {
+        let (_, plen, _) = layout(row);
+        &self.patterns[row][plen * p as usize..][..plen]
+    }
+
+    /// Writes `bytes`, a whole pattern of row `row`, into its pattern `p` (0..=31): the panel's
+    /// pending events go first, then msg 41 sub 44, 61 or 78 `{p, bytes}`, and the panel shows
+    /// the new pattern. False, and no pattern message, when the pattern holds `bytes` already.
+    pub fn set_pattern(&mut self, row: usize, p: u8, bytes: &[u8], panel: &mut Panel) -> bool {
+        self.forward(panel);
+        if self.pattern(row, p) == bytes {
+            return false;
+        }
+        let (_, plen, _) = layout(row);
+        self.patterns[row][plen * p as usize..][..plen].copy_from_slice(bytes);
+        let d = ROW_DEVICES[row];
+        let mut data = vec![p];
+        data.extend(bytes);
+        self.push(Msg::Device {
+            dev: d.id(),
+            sub: header_sub(d) + 2,
+            data,
+        });
+        self.flush_marked();
+        // the row's lengths, shuffle flags and steps are filled again
+        self.shown[row] = None;
+        self.fill_views(panel);
+        true
+    }
+
     // ---- loading ------------------------------------------------------------------------
 
     /// Opens `song`: builds it and queues it as the newest song, and resets the panel to its
@@ -721,10 +793,7 @@ impl Link {
             Event::Clear303 { synth, pattern } => {
                 let (_, plen, _) = layout(*synth);
                 let at = plen * *pattern as usize;
-                let mut bytes = self.patterns[*synth][at..at + plen].to_vec();
-                for s in 0..16 {
-                    bytes[2 + 6 * s..8 + 6 * s].copy_from_slice(&[0, 0, 0, 0, 0, 1]);
-                }
+                let bytes = emptied_pattern(*synth, &self.patterns[*synth][at..at + plen]);
                 self.patterns[*synth][at..at + plen].copy_from_slice(&bytes);
                 let mut data = vec![*pattern];
                 data.extend(bytes);
@@ -901,15 +970,20 @@ impl Link {
         }
         for e in &events {
             for m in self.messages(e) {
-                if let Some(c) = Self::command(&m) {
-                    self.backlog.push_back(c);
-                }
-                if let Some(log) = &mut self.log {
-                    log.push(m);
-                }
+                self.push(m);
             }
         }
         self.flush_marked();
+    }
+
+    /// Queues the player's command for `m` behind the backlog and logs `m`.
+    fn push(&mut self, m: Msg) {
+        if let Some(c) = Self::command(&m) {
+            self.backlog.push_back(c);
+        }
+        if let Some(log) = &mut self.log {
+            log.push(m);
+        }
     }
 
     /// Sends player commands that do not come from the panel, such as MIDI remote control's
@@ -1059,5 +1133,77 @@ impl Link {
         }
         self.player.collect_garbage();
         self.follow(panel);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A new song's pattern of row `row`: 16 steps, no shuffle, every step empty.
+    fn empty(row: usize) -> Vec<u8> {
+        let (_, plen, _) = layout(row);
+        let mut p = emptied_pattern(row, &vec![0xFF; plen]);
+        p[..2].copy_from_slice(&[0, 16]);
+        p
+    }
+
+    #[test]
+    fn a_pattern_is_empty_when_no_step_is_set() {
+        for row in 0..4 {
+            let e = empty(row);
+            assert!(is_empty_pattern(row, &e), "row {row}");
+            // the length and the shuffle flag do not count
+            let mut other = e.clone();
+            other[..2].copy_from_slice(&[1, 7]);
+            assert!(is_empty_pattern(row, &other), "row {row}");
+            // the last byte of the last step is used
+            let mut used = e.clone();
+            *used.last_mut().unwrap() ^= 1;
+            assert!(!is_empty_pattern(row, &used), "row {row}");
+            assert_eq!(emptied_pattern(row, &used), e, "row {row}");
+        }
+        // a 303 step of zeros is a note, not a rest
+        let mut note = empty(0);
+        note[2 + 5] = 0;
+        assert!(!is_empty_pattern(1, &note));
+        assert_eq!(&emptied_pattern(1, &note)[2..8], &CLEAR_303_STEP);
+    }
+
+    /// Row `row`'s 32 patterns, empty but those in `used`.
+    fn row_with(row: usize, used: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        for p in 0..32 {
+            let mut e = empty(row);
+            if used.contains(&p) {
+                e[2] ^= 1;
+            }
+            v.extend(e);
+        }
+        v
+    }
+
+    #[test]
+    fn the_next_empty_pattern_skips_used_ones_and_wraps() {
+        for row in [0, 2, 3] {
+            // the next one, crossing from bank A to bank B
+            assert_eq!(next_empty_pattern(row, &row_with(row, &[0, 8]), 7), Some(9));
+            assert_eq!(next_empty_pattern(row, &row_with(row, &[]), 7), Some(8));
+            // from D8 on to A1, and past the used A1
+            assert_eq!(next_empty_pattern(row, &row_with(row, &[31]), 31), Some(0));
+            assert_eq!(
+                next_empty_pattern(row, &row_with(row, &[0, 31]), 31),
+                Some(1)
+            );
+            // the pattern it starts from does not count
+            let all_but_5: Vec<u8> = (0..32).filter(|&p| p != 5).collect();
+            assert_eq!(next_empty_pattern(row, &row_with(row, &all_but_5), 5), None);
+            let all: Vec<u8> = (0..32).collect();
+            assert_eq!(next_empty_pattern(row, &row_with(row, &all), 12), None);
+            assert_eq!(
+                next_empty_pattern(row, &row_with(row, &all_but_5), 30),
+                Some(5)
+            );
+        }
     }
 }
