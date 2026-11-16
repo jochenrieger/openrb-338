@@ -1889,3 +1889,57 @@ fn a_command_takes_the_panels_pending_edits_first() {
     );
     assert_eq!(h.app.panel.rows[2].pattern, 1);
 }
+
+// ---- the used marker -----------------------------------------------------------------------
+
+/// The pattern buttons of row `r` (1..=4) that show the used marker, by button 1..=8.
+fn marked(h: &Harness, n: usize) -> Vec<u8> {
+    (1..=8)
+        .filter(|b| h.app.used_mark(&format!("pattern{n}.pattern{b}")))
+        .collect()
+}
+
+#[test]
+fn the_used_marker_follows_the_patterns() {
+    let mut h = Harness::new();
+    for n in 1..=4 {
+        assert_eq!(marked(&h, n), [0u8; 0], "a new song has no used pattern");
+    }
+    // an 808 step on A1 marks button 1; erased, the mark goes
+    let o = layout::TR808_ORIGIN;
+    let bd1 = Pos2::new(o.0 + 16.0 + 8.0, o.1 + 99.0);
+    h.click_at(bd1);
+    assert_eq!(marked(&h, 3), [1]);
+    h.click_at(bd1);
+    assert_eq!(marked(&h, 3), [0u8; 0]);
+    // a 303 note on D8 marks button 8 while bank D is shown
+    select(&mut h, 0, 31);
+    h.click("tb303_1.key5");
+    h.click("tb303_1.note_pause");
+    assert_eq!(marked(&h, 1), [8]);
+    h.click("pattern1.bankA");
+    assert_eq!(marked(&h, 1), [0u8; 0], "bank A has no used pattern");
+    // a paste marks, a cut unmarks
+    set_pattern(&mut h, 3, 0, &full_pattern(3, 1));
+    select(&mut h, 3, 0);
+    h.app.command(Cmd::CopyPattern);
+    select(&mut h, 3, 5);
+    h.app.command(Cmd::PastePattern);
+    assert_eq!(marked(&h, 4), [1, 6]);
+    h.app.command(Cmd::CutPattern);
+    assert_eq!(marked(&h, 4), [1]);
+    // another song: its own patterns
+    h.load("tests/songs/shipped/Calm.rbs");
+    let link = h.app.link.as_ref().unwrap();
+    let mut used = 0;
+    for r in 0..4 {
+        let bank = h.app.panel.rows[r].bank;
+        for b in 1..=8u8 {
+            let empty = orb_ui::link::is_empty_pattern(r, link.pattern(r, 8 * bank + b - 1));
+            let id = format!("pattern{}.pattern{b}", r + 1);
+            assert_eq!(h.app.used_mark(&id), !empty, "{id}");
+            used += !empty as usize;
+        }
+    }
+    assert!(used > 4, "{used} used patterns shown");
+}

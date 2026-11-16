@@ -1162,8 +1162,35 @@ impl App {
                 }
                 let name = self.panel.part_name(c, down, now);
                 paint_part(ui, &name, rect);
+                if self.used_mark(&c.id) {
+                    // a dot in the button's top right corner, amber with a dark rim
+                    let center = rect.right_top() + view.scale * Vec2::new(-3.2, 3.2);
+                    let rim = egui::Stroke::new(0.5 * view.scale, Color32::from_gray(40));
+                    let fill = Color32::from_rgb(0xf0, 0xb4, 0x4c);
+                    ui.painter().circle(center, 1.5 * view.scale, fill, rim);
+                }
             }
         }
+    }
+
+    /// Whether the pattern button `id` ("pattern3.pattern1") shows the used marker: the pattern
+    /// it selects in the shown bank is not empty (`link::is_empty_pattern`). Never without a
+    /// link.
+    pub fn used_mark(&self, id: &str) -> bool {
+        let number = |s: Option<&str>| s.and_then(|n| n.parse::<u8>().ok());
+        let Some((section, name)) = id.split_once('.') else {
+            return false;
+        };
+        let (Some(link), Some(r @ 1..=4), Some(b @ 1..=8)) = (
+            &self.link,
+            number(section.strip_prefix("pattern")),
+            number(name.strip_prefix("pattern")),
+        ) else {
+            return false;
+        };
+        let r = r as usize - 1;
+        let p = 8 * self.panel.rows[r].bank + b - 1;
+        !crate::link::is_empty_pattern(r, link.pattern(r, p))
     }
 
     /// The 808's mod window: the current kit's `splash.jpg` (the embedded standard mod's for the

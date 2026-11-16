@@ -325,7 +325,10 @@ Behavior [C]:
   `docs/song_load.md` section 4.10, which lists every device message of the panel).
 - **orb** (orb's own commands; what the original's Edit menu items do was not read): Edit >
   Cut, Copy, Paste and Duplicate Pattern act on the selected pattern of the focused row, and
-  Edit > Undo takes back the last Cut, Paste or Duplicate (section 18).
+  Edit > Undo takes back the last Cut, Paste or Duplicate (section 18). A pattern button whose
+  pattern in the shown bank is not empty (section 18) shows a small amber dot in its top right
+  corner, lit or not (`App::used_mark`, drawn by code over the button's art), so the free
+  patterns and the one Duplicate fills are visible.
 
 ## 5. TB-303 (two)
 
@@ -1080,7 +1083,7 @@ is one more entry.
     flag: every 808 and 909 step byte 0, every 303 step the Clear state (note 0, no flags, rest
     on), which a new song holds. A 303 pattern of sixteen low C notes with rest off plays and is
     not empty: the shipped "ReBirth 1.0 Default Song" holds one in each of its 64 303 slots, so
-    there a Duplicate on a 303 row finds no empty pattern.
+    there every 303 button shows the marker and a Duplicate finds no empty pattern.
   - There are no dialogs: a paste onto a used pattern overwrites it, and Undo brings it back.
     Undo is forgotten by any other pattern edit (a step, the length, the shuffle flag, the
     303's Clear), an open and File > New.
